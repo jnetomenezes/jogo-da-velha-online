@@ -1,1 +1,302 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Jogo da Velha Online</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin:0; background:#0b0f14; color:#e8eef6; }
+    header { padding:16px; border-bottom:1px solid #1b2633; }
+    h1 { margin:0; font-size:18px; }
+    main { max-width:520px; margin:0 auto; padding:16px; display:grid; gap:12px; }
+    .card { background:#0f1722; border:1px solid #1b2633; border-radius:16px; padding:14px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input, button {
+      border-radius:12px; border:1px solid #243447;
+      background:#0b121b; color:#e8eef6;
+      padding:10px 12px; font-size:14px;
+    }
+    button { background:#2e7dff; border:0; font-weight:650; cursor:pointer; }
+    button.secondary { background:#203044; border:1px solid #2a3d56; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .muted { color:#b0c0d6; font-size:12px; line-height:1.35; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding:7px 10px;
+      border-radius:999px; background:#0b121b; border:1px solid #243447; font-size:12px; }
+    .board { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:10px; }
+    .cell {
+      aspect-ratio: 1 / 1;
+      display:flex; align-items:center; justify-content:center;
+      font-size:42px; font-weight:800;
+      border-radius:16px; background:#0b121b; border:1px solid #243447;
+      user-select:none; -webkit-tap-highlight-color: transparent;
+    }
+    .status { font-size:14px; line-height:1.3; }
+    .ok { color:#7CFFB2; }
+    .warn { color:#ffd37c; }
+  </style>
+</head>
+<body>
+<header><h1>⭕❌ Jogo da Velha Online</h1></header>
+<main>
+  <section class="card">
+    <div class="row">
+      <input id="roomId" placeholder="Código da sala (ex: ABC123)" />
+      <button id="createBtn">Criar sala</button>
+      <button id="joinBtn" class="secondary">Entrar</button>
+      <button id="copyBtn" class="secondary" disabled>Copiar código</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      1) Um de vocês clica <b>Criar sala</b> e manda o código. 2) O outro cola e clica <b>Entrar</b>.
+      <br/>Dica: mantenha a tela ligada no celular.
+    </div>
+  </section>
 
+  <section class="card">
+    <div class="row">
+      <span class="pill">Você é: <b id="me">—</b></span>
+      <span class="pill">Sala: <b id="roomLabel">—</b></span>
+      <button id="resetBtn" class="secondary" disabled>Reiniciar</button>
+    </div>
+    <div id="status" class="status" style="margin-top:10px">Crie ou entre em uma sala.</div>
+    <div class="board" id="board"></div>
+  </section>
+
+  <section class="card">
+    <div class="muted">
+      <b>Privacidade:</b> este exemplo é para jogar com amigo. Para produção, crie regras de segurança no Firebase.
+    </div>
+  </section>
+</main>
+
+<!-- Firebase (compat para simplicidade) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+
+<script>
+  // 1) COLE AQUI seu firebaseConfig (Firebase Console → Project settings → SDK setup)
+  const firebaseConfig = {
+    apiKey: "COLE_AQUI",
+    authDomain: "COLE_AQUI",
+    databaseURL: "COLE_AQUI",
+    projectId: "COLE_AQUI",
+    storageBucket: "COLE_AQUI",
+    messagingSenderId: "COLE_AQUI",
+    appId: "COLE_AQUI"
+  };
+
+  // --- App ---
+  const $ = (id) => document.getElementById(id);
+
+  let db = null;
+  let roomRef = null;
+  let roomId = null;
+
+  let myPlayer = null;     // "X" ou "O"
+  let myClientId = crypto.randomUUID();
+
+  const emptyBoard = () => Array(9).fill("");
+
+  function randomRoomCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let s = "";
+    for (let i=0;i<6;i++) s += chars[Math.floor(Math.random()*chars.length)];
+    return s;
+  }
+
+  function renderBoard(board) {
+    const el = $("board");
+    el.innerHTML = "";
+    board.forEach((v, i) => {
+      const c = document.createElement("div");
+      c.className = "cell";
+      c.textContent = v;
+      c.addEventListener("click", () => onCellClick(i));
+      el.appendChild(c);
+    });
+  }
+
+  function winner(board) {
+    const lines = [
+      [0,1,2],[3,4,5],[6,7,8],
+      [0,3,6],[1,4,7],[2,5,8],
+      [0,4,8],[2,4,6]
+    ];
+    for (const [a,b,c] of lines) {
+      if (board[a] && board[a] === board[b] && board[a] === board[c]) return board[a];
+    }
+    if (board.every(x => x)) return "draw";
+    return null;
+  }
+
+  function setStatus(html) { $("status").innerHTML = html; }
+
+  function ensureFirebase() {
+    if (db) return true;
+    // Checa se config foi preenchido
+    if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "COLE_AQUI") {
+      alert("Você precisa preencher o firebaseConfig no arquivo.");
+      return false;
+    }
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+    return true;
+  }
+
+  async function createRoom() {
+    if (!ensureFirebase()) return;
+
+    roomId = randomRoomCode();
+    $("roomId").value = roomId;
+    $("roomLabel").textContent = roomId;
+
+    roomRef = db.ref("rooms/" + roomId);
+
+    // Quem cria vira X
+    myPlayer = "X";
+    $("me").textContent = myPlayer;
+
+    const initial = {
+      createdAt: Date.now(),
+      board: emptyBoard(),
+      turn: "X",
+      winner: null,
+      players: {
+        X: { clientId: myClientId, joinedAt: Date.now() }
+      }
+    };
+    await roomRef.set(initial);
+
+    $("copyBtn").disabled = false;
+    $("resetBtn").disabled = false;
+
+    listenRoom();
+    setStatus(`<span class="ok">Sala criada.</span> Envie o código para seu amigo e aguarde ele entrar (ele será O).`);
+  }
+
+  async function joinRoom() {
+    if (!ensureFirebase()) return;
+
+    const code = $("roomId").value.trim().toUpperCase();
+    if (!code) return alert("Digite o código da sala.");
+
+    roomId = code;
+    $("roomLabel").textContent = roomId;
+    roomRef = db.ref("rooms/" + roomId);
+
+    const snap = await roomRef.get();
+    if (!snap.exists()) return alert("Sala não encontrada.");
+
+    const data = snap.val();
+    // Se X existe, entra como O; senão entra como X
+    const hasX = data.players && data.players.X;
+    const hasO = data.players && data.players.O;
+
+    if (hasX && hasO) {
+      alert("Sala já tem 2 jogadores. Use outro código.");
+      return;
+    }
+
+    myPlayer = hasX ? "O" : "X";
+    $("me").textContent = myPlayer;
+
+    await roomRef.child("players/" + myPlayer).set({ clientId: myClientId, joinedAt: Date.now() });
+
+    $("copyBtn").disabled = false;
+    $("resetBtn").disabled = false;
+
+    listenRoom();
+    setStatus(`<span class="ok">Conectado.</span> Você é <b>${myPlayer}</b>.`);
+  }
+
+  function listenRoom() {
+    roomRef.on("value", (snap) => {
+      const data = snap.val();
+      if (!data) return;
+
+      renderBoard(data.board);
+
+      const w = data.winner || winner(data.board);
+      if (w && w !== data.winner) {
+        // escreve winner só uma vez (evita corrida simples)
+        roomRef.child("winner").transaction(curr => curr || w);
+      }
+
+      const players = data.players || {};
+      const needBoth = players.X && players.O;
+      const wFinal = data.winner;
+
+      if (!needBoth) {
+        setStatus(`<span class="warn">Aguardando o outro jogador entrar…</span>`);
+        return;
+      }
+
+      if (wFinal === "draw") {
+        setStatus(`<b>Empate!</b> Clique em Reiniciar para jogar de novo.`);
+        return;
+      }
+      if (wFinal === "X" || wFinal === "O") {
+        setStatus(`<b>Vitória:</b> ${wFinal} ${wFinal === myPlayer ? "🎉 (você)" : ""} — Clique em Reiniciar.`);
+        return;
+      }
+
+      const isMyTurn = data.turn === myPlayer;
+      setStatus(`Vez de: <b>${data.turn}</b> — ${isMyTurn ? "<span class='ok'>sua vez</span>" : "<span class='warn'>aguarde</span>"}`);
+    });
+  }
+
+  function onCellClick(i) {
+    if (!roomRef || !myPlayer) return;
+
+    // Faz tudo com transaction para evitar duas jogadas no mesmo lugar
+    roomRef.transaction((data) => {
+      if (!data) return data;
+
+      const players = data.players || {};
+      if (!(players.X && players.O)) return data; // ainda não tem 2 jogadores
+
+      if (data.winner) return data;
+
+      if (data.turn !== myPlayer) return data;
+
+      const b = data.board || emptyBoard();
+      if (b[i]) return data;
+
+      b[i] = myPlayer;
+
+      const w = winner(b);
+      data.board = b;
+      data.winner = w;
+      data.turn = (myPlayer === "X") ? "O" : "X";
+      return data;
+    });
+  }
+
+  async function resetRoom() {
+    if (!roomRef) return;
+    await roomRef.child("board").set(emptyBoard());
+    await roomRef.child("turn").set("X");
+    await roomRef.child("winner").set(null);
+  }
+
+  async function copyCode() {
+    if (!roomId) return;
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setStatus(`<span class="ok">Código copiado:</span> <b>${roomId}</b>`);
+    } catch {
+      prompt("Copie o código:", roomId);
+    }
+  }
+
+  // UI events
+  $("createBtn").addEventListener("click", createRoom);
+  $("joinBtn").addEventListener("click", joinRoom);
+  $("resetBtn").addEventListener("click", resetRoom);
+  $("copyBtn").addEventListener("click", copyCode);
+
+  // Estado inicial
+  renderBoard(emptyBoard());
+</script>
+</body>
+</html>
